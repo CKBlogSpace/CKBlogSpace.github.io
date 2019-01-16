@@ -12,7 +12,74 @@
 <p>实际上问的就是<code>obj</code>这个指针所指向的内存空间所占用的大小。</p>
 <p>在深入探索这个问题之前，先了解一下OC的本质:</p>
 <ul>
-<li>我们平时编写的Objective-C代码，底层实现其实都是C\C++代码</li>
+<li>我们平时编写的Objective-C代码，底层实现其实都是C\C++代码，至于汇编是更下层的语言，再到机器语言就是电信号0和1了。<br><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-11-084024.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></li>
+<li>所以Objective-C的面向对象都是基于C\C++的数据结构实现的</li>
 </ul>
-<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-11-081923.png" alt=""></p>
+<p>思考：Objective-C的对象、类主要是基于C\C++的什么数据结构实现的？</p>
+<p>对于这个问题，稍微了解过底层的小伙伴应该都知道objc_object这类的结构体。而Objective-C的对象、类主要是基于C\C++的结构体来实现的，这一块可以查看<a href="https://opensource.apple.com" target="_blank" rel="noopener">苹果开源框架</a>中的<a href="https://opensource.apple.com/tarballs/objc4/objc4-750.tar.gz" target="_blank" rel="noopener">objc4-750的源码</a>部分，但是因为源码下载下来需要添加很多依赖的缘故，这里提供了可运行的<a href="https://github.com/Cheng455153666/objc4_750">源码下载</a>。</p>
+<p>到这里，既然知道了OC对应的是C/C++，那么关于探究上面的问题，只要能够想办法获取到刚刚这段代码所编译出来的内容即可。(这里建议直接使用命令行程序，方便探究，其他的可能需要引入各种库操作，且代码不够简洁，看起来较为麻烦)</p>
+<p>这里直接给出编译的指令，更多的内容，可以看看clang的编译指令。</p>
+<pre><code>xcrun -sdk iphoneos clang -arch arm64 -rewrite-objc OC源文件 -o 输出的CPP文件
+
+</code></pre><p>这个指令的意思就是使用Xcode自带的sdk工具，将OC源文件重写为64位架构下的iphone平台的C++文件。不写<code>-o 输出的CPP文件</code>默认生成同名的<code>.cpp</code>文件。</p>
+<p>执行后可以看到生成了一个新的文件。在最下方的几十行的位置，可以找到上面的代码编译后的样子。</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-12-124459.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>这里因为使用到了很多强制转换，看起来可能会稍微有些麻烦，可以删掉这些转换，方便观看。</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-12-125038.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>这行代码的意思是：</p>
+<ol>
+<li>获取到NSObject元类对象</li>
+<li>给元类对象发送alloc消息</li>
+<li>给alloc出来的实例对象发送init消息</li>
+</ol>
+<p>再找找NSObject的实现，在编译后的代码中我们可以找到其实现。</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-14-011126.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>接着可以去源码中找找Class的内部结构。</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-14-011541.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>objc_class是继承于objc_object的。关于这两个结构体是如何描述OC对象的，后面在Runtime的内容中会详细的表述。对于一个OC对象占用多少内存空间的问题，在这里可以看到Class是一个指向结构体的指针，既然是指针类型，其内存占用就是8个字节(64位)，而NSObject_IMPL这个结构体内部只有一个isa指针，所以一个NSObject对象的内存也是8个字节。但是实际上其占用的空间为16个字节。但这并不是说刚刚的分析出现了错误，而是因为平台特性决定的。可以先通过运行代码看一下结果。这里导入两个头文件：</p>
+<pre class=" language-C"><code class="language-C">#import <objc/runtime.h>
+#import <malloc/malloc.h>
+
+</code></pre>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-14-014650.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>这里可以看到，之前的分析确实是没错的，对象本身占用的空间确实为8字节，但是系统为其分配的大小为16个字节。 去源码中找找这两个方法的实现。<code>class_getInstanceSize</code>方法可以再objc4的源码中找到。</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-15-022700.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>从名称可以看出，返回了一个对其后的实例对象的大小。</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-15-022905.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>可以看到<code>alignedInstanceSize</code>方法返回的是对象成员变量的大小。而不是系统分配内存的大小。</p>
+<p>接着是探究系统是如何为对象分配内存的。找到<code>allocWithZone</code>方法，接着找到<code>class_createInstance</code>，最后关于分配内存的方法会落到<code>calloc</code>上，而<code>calloc</code>中传递的参数<code>size</code>的值为：</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-15-084318.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>看看这个<code>instanceSize</code>做了什么</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-15-084348.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>emmm… … 似乎已经找到答案了。注释中也很明确的说明了，CF框架中要求所有的对象最小为16个字节。这也就是为什么我们会看到刚刚创建的那个对象会占用16个字节的原因了。</p>
+<p>接着看看这8个字节是如何排布在这16个字节的。</p>
+<p>先看看对象的内存地址</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-15-090059.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>接着使用内存查看工具</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-15-090133.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>输入对象的地址</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-15-090212.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>可以看到最上面的内存占用情况为前8个字节被占用，后8个字节是0。这里因为小端(从高地址向低地址读)的缘故，所以是占用的左边的8位。</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-15-090238.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>也可以直接使用LLDB开查看对象的内存，这里打印出从对象地址开始的4x16个字节的数据。</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-15-090453.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<h4 id="接着看另外一个对象"><a href="#接着看另外一个对象" class="headerlink" title="接着看另外一个对象"></a>接着看另外一个对象</h4><p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-15-091529.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>这个对象在内存中所占的内存空间又是多少？继续看一下编译后的对象结构体。</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-15-091818.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>关于<code>NSObject_IMPL</code>，之前我们了解过这是一个isa指针。指针所占用的内存为8个字节，64位下的int类型占用4个字节，所以一共为16个字节。可以通过上面讲述的工具查看一下。或者直接使用代码输出结果。</p>
+<h4 id="再来看一个"><a href="#再来看一个" class="headerlink" title="再来看一个"></a>再来看一个</h4><p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-16-012044.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>一个<code>CKStudent</code>创建占用多少内存空间。</p>
+<p>到现在我们已经可以知道这几个类对应的结构体的样子了。</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-16-012529.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>首先一个<code>CKPerson</code>占用16个字节，再加上<code>_grade</code>占用的4个字节和指向父类的指针，一共是20个字节。我们使用方法打印一下其大小以及系统为其分配的内存大小。</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-16-013232.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>居然是24！而且系统分配的内存大小也变成了32，再回到<code>class_geInstanceSize</code>方法。</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-15-022700.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>这里可以看到，返回的是一个对其过的大小。这里的对其，是对于结构体对其。结构体对其的规则时，是最大变量所占字节的整数倍，这里的最大变量是指针(8字节)，因此返回的是结构体对其后的值(24字节)。这里关于更多的内存对其的规则，可以去网上百度一下相关内容。</p>
+<p>在看看<code>malloc_size</code>方法的实现。</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-16-014450.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>发现在objc4的源码中没有这个方法的实现。但是从注释中，告诉我们，确实是返回系统为对象分配的内存大小。前面的分析中，我们知道系统分配内存使用的是<code>cmalloc</code>方法。幸运的是，内存分配的源码也是开源的，去苹果的开源网站下载<a href="https://opensource.apple.com/tarballs/libmalloc" target="_blank" rel="noopener">libmalloc</a>，这里使用的是<code>libmalloc-166.220.1.tar.gz</code>。(PS:实际上到这一步就够了，这个库中的代码挺难读的<code>_(:зゝ∠)_</code>)。实际上通过刚刚介绍过的结构体对其，我们能够大致猜测到。但凡是分配了超出对象实际占用大小的空间的情况，系统内部都进行过了一次对其。这种对其和结构体对其类似，也是针对操作系统做的优化，加快查询速度。在<code>libmalloc</code>中，可以找到下面的东西。</p>
+<p><img src="http://cknote.oss-cn-beijing.aliyuncs.com/2019-01-16-022320.png?image/auto-orient,1/format,png/watermark,text_Q2hlcnJ5S2luZw,size_20,g_center,t_40,x_10,y_10" alt=""></p>
+<p>到这里，只需要记住结论，系统所分配的内存都为16的倍数即可。这也是为什么刚刚我们传入24，却分配了32个字节的原因。实际上这种内存对其的优化方案在很多操作系统平台都是存在的。</p>
+<h5 id="PS"><a href="#PS" class="headerlink" title="PS:"></a>PS:</h5><p>关于<code>sizeof</code>:<code>sizeof</code>是一个运算符，在程序中使用到这个运算符后，编译会立刻转换为常数，如传入int返回4，传入指针返回8等。而当我们传入一个对象(指针)时，实际上会计算出指向这个对象指针对的大小。</p>
 </article><br><br><span class="next-post"><a href="/2019/01/11/iOS总结大纲/" itemprop="url">Older Post ⇒</a></span><br><br><br></main></body></html>
